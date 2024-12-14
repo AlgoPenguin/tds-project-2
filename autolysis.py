@@ -9,6 +9,7 @@
 #   "chardet",
 #   "scikit-learn",
 #   "statsmodels",
+#   "scipy",
 # ]
 # ///
 
@@ -25,6 +26,8 @@ from tenacity import retry, wait_fixed, stop_after_attempt
 import numpy as np
 import statsmodels.api as sm
 from sklearn.decomposition import PCA
+from sklearn.cluster import KMeans
+from scipy.stats import f_oneway, chi2_contingency
 
 logging.basicConfig(level=logging.INFO, format='%(levelname)s: %(message)s')
 
@@ -43,11 +46,9 @@ if api_key is None:
 
 openai_client = OpenAI(api_key=api_key, base_url=api_base)
 
-
 def safe_filename(name: str) -> str:
     """Convert filename into a safe string to name charts accordingly."""
     return name.replace(".csv", "").replace(" ", "_")
-
 
 @retry(wait=wait_fixed(2), stop=stop_after_attempt(3))
 def call_llm(messages, functions=None, function_call=None):
@@ -93,13 +94,6 @@ def read_csv_with_encoding(file_path, encodings=['utf-8', 'latin1', 'cp1252']):
 def summarize_dataframe(df, max_unique=10):
     """
     Summarize the dataframe columns and basic stats.
-
-    Parameters:
-        df (pd.DataFrame): The input dataframe.
-        max_unique (int): Max number of unique values to sample for display.
-
-    Returns:
-        dict: A dictionary summarizing shape, columns, types, missing counts, and basic stats.
     """
     summary = {'shape': df.shape, 'columns': []}
     for col in df.columns:
@@ -121,13 +115,6 @@ def summarize_dataframe(df, max_unique=10):
 def analyze_categorical(df, max_levels=10):
     """
     Analyze categorical columns for top frequencies.
-
-    Parameters:
-        df (pd.DataFrame): The input dataframe.
-        max_levels (int): Maximum number of top categories to display.
-
-    Returns:
-        list of dict: Each dict has 'column', 'top_values', 'num_unique'.
     """
     cat_analysis = []
     for col in df.columns:
@@ -143,9 +130,6 @@ def analyze_categorical(df, max_levels=10):
 def detect_outliers(df):
     """
     Detect outliers using a Z-score threshold of 3.
-
-    Returns:
-        list of dict: Each dict with 'column', 'outlier_count', 'total_count'.
     """
     numeric_df = df.select_dtypes(include=[np.number])
     outliers = []
@@ -166,9 +150,6 @@ def detect_outliers(df):
 def simple_regression(df):
     """
     Perform a simple linear regression on the first two numeric columns.
-
-    Returns:
-        dict or None: Regression info including coef, r_squared, p-values or None if not possible.
     """
     numeric_cols = df.select_dtypes(include=[np.number]).columns
     if len(numeric_cols) < 2:
@@ -191,9 +172,6 @@ def simple_regression(df):
 def perform_pca(df):
     """
     Perform PCA on numeric columns if there are more than 2 numeric features.
-    
-    Returns:
-        dict with PCA results and a plot file if successful, else None.
     """
     numeric_df = df.select_dtypes(include=[np.number]).dropna(axis=0)
     if numeric_df.shape[1] <= 2 or numeric_df.shape[0] < 5:
@@ -202,20 +180,20 @@ def perform_pca(df):
     pca = PCA(n_components=2)
     pcs = pca.fit_transform(numeric_df)
     pca_df = pd.DataFrame(pcs, columns=["PC1", "PC2"])
-    # Try to color by the first categorical column if available
+
+    # Pick a categorical column to color by if available
     cat_cols = [c for c in df.columns if not pd.api.types.is_numeric_dtype(df[c]) and df[c].dtype != 'datetime64[ns]']
-    if cat_cols:
-        hue_col = cat_cols[0]
-        pca_df[hue_col] = df[hue_col].iloc[pca_df.index].fillna("Missing")
-    else:
-        hue_col = None
+    hue_col = cat_cols[0] if cat_cols else None
 
     pca_file = "pca_scatter.png"
     plt.figure(figsize=(6,4))
     if hue_col:
-        sns.scatterplot(data=pca_df, x="PC1", y="PC2", hue=hue_col, palette="Set2")
+        sns.scatterplot(data=pca_df, x="PC1", y="PC2", hue=df[hue_col].iloc[pca_df.index].fillna("Missing"), palette="Set2")
+        plt.legend(title=hue_col)
     else:
         sns.scatterplot(data=pca_df, x="PC1", y="PC2", color='blue')
+    plt.xlabel("Principal Component 1")
+    plt.ylabel("Principal Component 2")
     plt.title("PCA Scatter Plot (First Two PCs)")
     plt.tight_layout()
     plt.savefig(pca_file)
@@ -227,12 +205,83 @@ def perform_pca(df):
         'hue_col': hue_col
     }
 
+def perform_anova(df):
+    """
+    Perform a one-way ANOVA if there's a numeric column and a categorical column with multiple categories.
+    """
+    cat_cols = [c for c in df.columns if not pd.api.types.is_numeric_dtype(df[c]) and df[c].dtype != 'datetime64[ns]']
+    num_cols = df.select_dtypes(include=[np.number]).columns
+    if len(cat_cols) == 0 or len(num_cols) == 0:
+        return None
+
+    # Just pick the first numeric col and first categorical col
+    cat_col = cat_cols[0]
+    num_col = num_cols[0]
+    grouped = df[[cat_col, num_col]].dropna().groupby(cat_col)[num_col].apply(list)
+
+    if len(grouped) < 2:
+        return None
+
+    # Perform ANOVA
+    fstat, pvalue = f_oneway(*grouped)
+    return {
+        'categorical_col': cat_col,
+        'numeric_col': num_col,
+        'f_statistic': fstat,
+        'p_value': pvalue
+    }
+
+def perform_chi_square(df):
+    """
+    Perform a chi-square test on two categorical columns if available.
+    """
+    cat_cols = [c for c in df.columns if not pd.api.types.is_numeric_dtype(df[c]) and df[c].dtype != 'datetime64[ns]']
+    if len(cat_cols) < 2:
+        return None
+    # Pick the first two categorical columns
+    cat1, cat2 = cat_cols[:2]
+    contingency_table = pd.crosstab(df[cat1], df[cat2])
+    if contingency_table.shape[0] < 2 or contingency_table.shape[1] < 2:
+        return None
+    chi2, p, dof, expected = chi2_contingency(contingency_table)
+    return {
+        'cat_col_1': cat1,
+        'cat_col_2': cat2,
+        'chi2': chi2,
+        'p_value': p,
+        'dof': dof
+    }
+
+def perform_clustering(df):
+    """
+    Perform K-Means clustering if multiple numeric columns.
+    """
+    numeric_df = df.select_dtypes(include=[np.number]).dropna(axis=0)
+    if numeric_df.shape[1] < 2 or numeric_df.shape[0] < 5:
+        return None
+    kmeans = KMeans(n_clusters=3, n_init=10, random_state=42)
+    labels = kmeans.fit_predict(numeric_df)
+    cluster_file = "cluster_scatter.png"
+    # If we have at least 2 numeric columns, plot first two dims
+    cols = numeric_df.columns
+    plt.figure(figsize=(6,4))
+    sns.scatterplot(x=numeric_df[cols[0]], y=numeric_df[cols[1]], hue=labels, palette="Set1")
+    plt.xlabel(cols[0])
+    plt.ylabel(cols[1])
+    plt.title("K-Means Clustering (3 clusters)")
+    plt.legend(title="Cluster")
+    plt.tight_layout()
+    plt.savefig(cluster_file)
+    plt.close()
+    return {
+        'inertia': kmeans.inertia_,
+        'clusters': 3,
+        'cluster_file': cluster_file
+    }
+
 def plot_correlation_matrix(df, output_file):
     """
-    Plot correlation matrix of numeric columns.
-    
-    Returns:
-        output_file or None if not enough numeric columns.
+    Plot correlation matrix of numeric columns with annotations and labels.
     """
     numeric_df = df.select_dtypes(include=[np.number])
     if numeric_df.shape[1] < 2:
@@ -241,6 +290,8 @@ def plot_correlation_matrix(df, output_file):
     plt.figure(figsize=(6,6))
     sns.heatmap(corr, annot=True, cmap='coolwarm', square=True, cbar=True)
     plt.title("Correlation Matrix")
+    plt.xlabel("Features")
+    plt.ylabel("Features")
     plt.tight_layout()
     plt.savefig(output_file)
     plt.close()
@@ -248,10 +299,7 @@ def plot_correlation_matrix(df, output_file):
 
 def plot_missing_values(df, output_file):
     """
-    Plot a bar chart of missing values per column.
-    
-    Returns:
-        output_file or None if no missing values.
+    Plot a bar chart of missing values per column with labels.
     """
     missing_counts = df.isna().sum()
     if missing_counts.sum() == 0:
@@ -269,9 +317,6 @@ def plot_missing_values(df, output_file):
 def plot_hist_of_numeric(df, output_file):
     """
     Plot histograms for numeric data.
-    
-    Returns:
-        output_file or None if no numeric data.
     """
     numeric_df = df.select_dtypes(include=[np.number])
     if numeric_df.shape[1] == 0:
@@ -279,6 +324,7 @@ def plot_hist_of_numeric(df, output_file):
     plt.figure(figsize=(6,4))
     if numeric_df.shape[1] > 1:
         numeric_df.hist(bins=30, figsize=(6,4))
+        plt.title("Numeric Distributions")
         plt.tight_layout()
         plt.savefig(output_file)
         plt.close()
@@ -286,38 +332,31 @@ def plot_hist_of_numeric(df, output_file):
         col = numeric_df.columns[0]
         sns.histplot(numeric_df[col], kde=True, color='green')
         plt.title(f"Distribution of {col}")
+        plt.xlabel(col)
+        plt.ylabel("Count")
         plt.tight_layout()
         plt.savefig(output_file)
         plt.close()
     return output_file
 
 @retry(wait=wait_fixed(2), stop=stop_after_attempt(3))
-def get_llm_analysis(summary_dict, cat_analysis, outliers, regression_info, pca_info):
+def get_llm_analysis(summary_dict, cat_analysis, outliers, regression_info, pca_info, anova_info, chi_info, cluster_info):
     """
-    Use LLM to analyze the summary and additional results.
-
-    Parameters:
-        summary_dict (dict): Summary of the dataset.
-        cat_analysis (list): Categorical analysis.
-        outliers (list): Outlier info.
-        regression_info (dict or None): Regression analysis results.
-        pca_info (dict or None): PCA results.
-
-    Returns:
-        str: Insights from the LLM.
+    Use LLM to analyze the summary and additional results, emphasizing significant findings and advanced tests.
     """
-    # If there's PCA info, we mention advanced analysis.
-    # Also instruct the LLM to maintain consistent interpretation across runs.
     content = (
-        "You are a data analyst. We have a dataset summary and various analyses.\n"
-        "Be stable and consistent in your reasoning; do not contradict yourself if run multiple times.\n\n"
-        "Data summary (concise):\n" + str(summary_dict) + "\n\n"
+        "You are a data analyst. We've done multiple analyses:\n\n"
+        "Data summary:\n" + str(summary_dict) + "\n\n"
         "Categorical analysis:\n" + str(cat_analysis) + "\n\n"
         "Outlier detection:\n" + str(outliers) + "\n\n"
         "Regression analysis:\n" + str(regression_info) + "\n\n"
         "PCA analysis:\n" + str(pca_info) + "\n\n"
-        "Discuss numeric and categorical aspects, highlight outliers and their potential implications, interpret the regression, "
-        "and consider what PCA results suggest. Mention that results may vary, but aim for stable interpretation. Suggest deeper analyses or advanced statistical tests next time."
+        "ANOVA results:\n" + str(anova_info) + "\n\n"
+        "Chi-square test results:\n" + str(chi_info) + "\n\n"
+        "Clustering results:\n" + str(cluster_info) + "\n\n"
+        "Please highlight the most significant findings from these analyses. Emphasize what is meaningful (e.g., significant p-values, distinct clusters). "
+        "Discuss implications of these findings and suggest even more advanced statistical or ML methods. "
+        "Also maintain consistency as results may vary if run multiple times."
     )
     messages = [
         {"role": "system", "content": "You are a very insightful data analyst."},
@@ -329,33 +368,23 @@ def get_llm_analysis(summary_dict, cat_analysis, outliers, regression_info, pca_
 @retry(wait=wait_fixed(2), stop=stop_after_attempt(3))
 def get_llm_story(summary_dict, analysis_insights, chart_files):
     """
-    Ask the LLM to write a coherent README.md narrative referencing the analyses and charts.
-
-    Parameters:
-        summary_dict (dict): Data summary.
-        analysis_insights (str): Insights from LLM analysis.
-        chart_files (list): List of chart filenames generated.
-
-    Returns:
-        str: The narrative in Markdown.
+    Ask LLM to write a README.md narrative referencing analyses, charts, and emphasizing significant findings.
     """
-    # Emphasize stable and coherent narrative and direct mention of charts:
     content = (
-        "You are a data storyteller. Produce a stable and coherent README.md. "
-        "We analyzed a dataset by checking missing values, correlations, distributions, categorical frequencies, outliers, regression, and PCA.\n\n"
-        "Data summary (concise):\n" + str(summary_dict) + "\n\n"
-        "Insights:\n" + analysis_insights + "\n\n"
-        "Charts available: " + ", ".join(chart_files) + "\n\n"
-        "Instructions:\n"
-        "- Start with an introduction.\n"
-        "- Describe each analysis step and why it was performed.\n"
+        "You are a data storyteller. Produce a README.md:\n"
+        "- Introduce the dataset.\n"
+        "- Describe each analysis step (missing values, correlation, distributions, categorical frequencies, outliers, regression, PCA, ANOVA, chi-square test, clustering) and why.\n"
+        "- Emphasize significant findings (e.g. significant ANOVA p-value, meaningful regression, distinct PCA structure, clustering patterns, chi-square test insights).\n"
         "- Reference the charts at appropriate steps using `![Chart](filename.png)`.\n"
-        "- Summarize key findings from numeric, categorical, outlier, regression, and PCA analyses.\n"
         "- Suggest implications and next steps.\n"
-        "- Remind the reader that LLM results might vary, but you've tried to maintain consistency.\n"
+        "- Acknowledge that LLM results can vary but you've tried to maintain consistency.\n\n"
+        "Data summary:\n" + str(summary_dict) + "\n\n"
+        "Insights:\n" + analysis_insights + "\n\n"
+        "Charts: " + ", ".join(chart_files)
     )
+
     messages = [
-        {"role": "system", "content": "You are a brilliant data storyteller. Maintain coherence and consistent interpretation."},
+        {"role": "system", "content": "You are a brilliant data storyteller. Highlight major findings and maintain coherence."},
         {"role": "user", "content": content}
     ]
     response = call_llm(messages)
@@ -375,6 +404,20 @@ functions = [
             },
             "required": ["analysis_type"]
         }
+    },
+    {
+        "name": "describe_chart_insights",
+        "description": "Describe what the given chart might indicate.",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "chart_name": {
+                    "type": "string",
+                    "description": "Name of the chart file"
+                }
+            },
+            "required": ["chart_name"]
+        }
     }
 ]
 
@@ -387,7 +430,7 @@ def run_function_call_scenario(summary_dict):
         "Respond by calling the function 'suggest_numeric_analysis' with a suitable analysis_type."
     )
     messages = [
-        {"role": "system", "content": "You are a data scientist trying to be consistent in recommendations."},
+        {"role": "system", "content": "You are a data scientist trying to be consistent."},
         {"role": "user", "content": content}
     ]
 
@@ -400,14 +443,50 @@ def run_function_call_scenario(summary_dict):
     except Exception as e:
         logging.error(f"Function call scenario failed: {e}")
 
+def run_advanced_llm_scenario(summary_dict):
+    """
+    Ask the LLM to propose another advanced analysis after seeing initial results.
+    """
+    content = (
+        "We have performed several analyses. What advanced statistical test or machine learning method could we try next? "
+        "Just suggest the approach and explain why it would help, do not call any function."
+    )
+    messages = [
+        {"role": "system", "content": "You are an expert data scientist."},
+        {"role": "user", "content": content}
+    ]
+    resp = call_llm(messages)
+    logging.info("Additional advanced analysis suggestion: %s", resp.choices[0].message.content.strip())
+
+def run_vision_like_scenario(chart_files):
+    """
+    Simulate a vision capability scenario: ask the LLM to describe what insights might be drawn from a given chart.
+    We'll pick one chart and call the 'describe_chart_insights' function.
+
+    This simulates more agentic workflow with multiple LLM calls.
+    """
+    if not chart_files:
+        return
+    chosen_chart = chart_files[0]
+    content = (
+        "Given this chart filename, use the 'describe_chart_insights' function call to describe what the chart might indicate."
+    )
+    messages = [
+        {"role": "system", "content": "You are a vision-enabled assistant."},
+        {"role": "user", "content": content}
+    ]
+    try:
+        resp = call_llm(messages, functions=functions, function_call={"name": "describe_chart_insights"})
+        for choice in resp.choices:
+            if choice.message and choice.message.function_call:
+                logging.info("Chart description function call: %s", choice.message.function_call)
+                break
+    except Exception as e:
+        logging.error(f"Vision-like scenario failed: {e}")
+
 def save_outputs(base_name, chart_files, readme_content):
     """
     Save charts and README.md into a dedicated directory.
-
-    Parameters:
-        base_name (str): Base name derived from the input CSV.
-        chart_files (list): List of generated chart files.
-        readme_content (str): The narrative for README.md.
     """
     output_dir = base_name
     os.makedirs(output_dir, exist_ok=True)
@@ -435,6 +514,9 @@ def main():
     outliers = detect_outliers(df)
     regression_info = simple_regression(df)
     pca_info = perform_pca(df)
+    anova_info = perform_anova(df)
+    chi_info = perform_chi_square(df)
+    cluster_info = perform_clustering(df)
 
     base_name = safe_filename(os.path.basename(csv_file))
     chart_files = []
@@ -457,9 +539,20 @@ def main():
     if pca_info and 'pca_file' in pca_info:
         chart_files.append(pca_info['pca_file'])
 
+    if cluster_info and 'cluster_file' in cluster_info:
+        chart_files.append(cluster_info['cluster_file'])
+
     # LLM analysis
-    analysis_insights = get_llm_analysis(summary, cat_analysis, outliers, regression_info, pca_info)
+    analysis_insights = get_llm_analysis(summary, cat_analysis, outliers, regression_info, pca_info, anova_info, chi_info, cluster_info)
+
+    # Demonstrate function calling scenario
     run_function_call_scenario(summary)
+
+    # Additional advanced scenario
+    run_advanced_llm_scenario(summary)
+
+    # Vision-like scenario
+    run_vision_like_scenario(chart_files)
 
     # Get narrative story
     readme_content = get_llm_story(summary, analysis_insights, chart_files)
