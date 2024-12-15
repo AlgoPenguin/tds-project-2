@@ -57,8 +57,6 @@ def safe_filename(name: str) -> str:
 def call_llm(messages, functions=None, function_call=None):
     """
     Call the LLM with retries.
-    This function is central to interacting with the LLM. It allows function calling
-    and handles transient API errors via retries.
     """
     try:
         response = openai_client.chat.completions.create(
@@ -91,11 +89,10 @@ def read_csv_with_encoding(file_path, encodings=['utf-8', 'latin1', 'cp1252']):
 def summarize_dataframe(df, max_unique=10, max_cols=10):
     """
     Summarize the dataframe columns and basic stats.
-    Limit columns for token efficiency. This partial summary is explained to the LLM,
-    so it knows we are focusing on a subset due to cost constraints.
+    Limit the number of columns returned if large for token efficiency.
     """
     summary = {'shape': df.shape, 'columns': []}
-    cols = df.columns[:max_cols]
+    cols = df.columns[:max_cols]  # limit columns for token saving
     for col in cols:
         col_info = {
             'name': col,
@@ -113,7 +110,7 @@ def summarize_dataframe(df, max_unique=10, max_cols=10):
     return summary
 
 def analyze_categorical(df, max_levels=10):
-    """Analyze top frequency categories for categorical columns."""
+    """Analyze categorical columns for top frequencies."""
     cat_analysis = []
     for col in df.columns:
         if not pd.api.types.is_numeric_dtype(df[col]) and df[col].dtype != 'datetime64[ns]':
@@ -126,7 +123,7 @@ def analyze_categorical(df, max_levels=10):
     return cat_analysis
 
 def detect_outliers(df):
-    """Detect outliers using Z-score > 3 rule for numeric columns."""
+    """Detect outliers using a Z-score threshold of 3."""
     numeric_df = df.select_dtypes(include=[np.number])
     outliers = []
     for col in numeric_df.columns:
@@ -144,7 +141,7 @@ def detect_outliers(df):
     return outliers
 
 def simple_regression(df):
-    """Simple OLS regression with first two numeric columns."""
+    """Perform a simple OLS regression on the first two numeric columns."""
     numeric_cols = df.select_dtypes(include=[np.number]).columns
     if len(numeric_cols) < 2:
         return None
@@ -164,7 +161,7 @@ def simple_regression(df):
     }
 
 def perform_pca(df):
-    """Perform PCA if multiple numeric features are available."""
+    """Perform PCA on numeric columns if >2 numeric features."""
     numeric_df = df.select_dtypes(include=[np.number]).dropna(axis=0)
     if numeric_df.shape[1] <= 2 or numeric_df.shape[0] < 5:
         return None
@@ -196,7 +193,7 @@ def perform_pca(df):
     }
 
 def perform_anova(df):
-    """Perform one-way ANOVA if possible."""
+    """Perform a one-way ANOVA if conditions met."""
     cat_cols = [c for c in df.columns if not pd.api.types.is_numeric_dtype(df[c]) and df[c].dtype != 'datetime64[ns]']
     num_cols = df.select_dtypes(include=[np.number]).columns
     if len(cat_cols) == 0 or len(num_cols) == 0:
@@ -212,7 +209,7 @@ def perform_anova(df):
     return {'categorical_col': cat_col, 'numeric_col': num_col, 'f_statistic': fstat, 'p_value': pvalue}
 
 def perform_chi_square(df):
-    """Perform chi-square test if possible."""
+    """Perform a chi-square test if possible."""
     cat_cols = [c for c in df.columns if not pd.api.types.is_numeric_dtype(df[c]) and df[c].dtype != 'datetime64[ns]']
     if len(cat_cols) < 2:
         return None
@@ -249,8 +246,7 @@ def perform_clustering(df):
 
 def advanced_ml_analysis(df):
     """
-    Attempt more advanced ML (Random Forest).
-    This adds more innovative analysis compared to basic stats.
+    Attempt a more advanced ML approach: Random Forest regression or classification if possible.
     """
     numeric_cols = df.select_dtypes(include=[np.number]).columns
     if len(numeric_cols) > 2:
@@ -288,7 +284,7 @@ def advanced_ml_analysis(df):
     return None
 
 def plot_correlation_matrix(df, output_file):
-    """Plot correlation matrix to visualize relationships."""
+    """Plot correlation matrix of numeric columns."""
     numeric_df = df.select_dtypes(include=[np.number])
     if numeric_df.shape[1] < 2:
         return None
@@ -304,7 +300,7 @@ def plot_correlation_matrix(df, output_file):
     return output_file
 
 def plot_missing_values(df, output_file):
-    """Plot missing values to highlight data quality issues."""
+    """Plot bar chart of missing values."""
     missing_counts = df.isna().sum()
     if missing_counts.sum() == 0:
         return None
@@ -319,7 +315,7 @@ def plot_missing_values(df, output_file):
     return output_file
 
 def plot_hist_of_numeric(df, output_file):
-    """Plot numeric distributions to understand data spread."""
+    """Plot histograms for numeric data."""
     numeric_df = df.select_dtypes(include=[np.number])
     if numeric_df.shape[1] == 0:
         return None
@@ -373,10 +369,7 @@ functions = [
 ]
 
 def run_function_call_scenario(summary_dict):
-    """
-    Demonstrate function calling scenario.
-    Shows agentic capability: LLM is asked to propose a numeric analysis step by calling a function.
-    """
+    """Demonstrate function calling scenario."""
     content = (
         "Given the data summary, suggest a numeric analysis approach. "
         "Respond by calling 'suggest_numeric_analysis' with a suitable analysis_type."
@@ -396,10 +389,7 @@ def run_function_call_scenario(summary_dict):
         logging.error(f"Function call scenario failed: {e}")
 
 def run_advanced_llm_scenario(summary_dict):
-    """
-    Ask LLM to propose another advanced method after initial results.
-    This extends the agentic workflow by seeking further guidance dynamically.
-    """
+    """Ask LLM to propose another advanced method after initial results."""
     content = "We've done multiple analyses. What advanced method could we try next, and why?"
     messages = [
         {"role": "system", "content": "You are an expert data scientist."},
@@ -413,8 +403,6 @@ def run_advanced_llm_scenario(summary_dict):
 def run_vision_like_scenario(chart_files):
     """
     Ask LLM to describe chart insights for one chart.
-    This simulates a vision step, extracting insights from visual output.
-    Though this is a mock and not true vision, it demonstrates agentic integration.
     """
     if not chart_files:
         return None
@@ -431,7 +419,7 @@ def run_vision_like_scenario(chart_files):
         for choice in resp.choices:
             if choice.message and choice.message.function_call:
                 # Mock a response
-                chart_insight = f"The chart '{chosen_chart}' reveals distinct data groupings that might indicate meaningful patterns."
+                chart_insight = f"The chart '{chosen_chart}' reveals distinct data groupings that could hint at underlying patterns."
                 logging.info("Chart insight generated (mock): %s", chart_insight)
                 return chart_insight
     except Exception as e:
@@ -441,13 +429,10 @@ def run_vision_like_scenario(chart_files):
 @retry(wait=wait_fixed(2), stop=stop_after_attempt(3))
 def get_llm_analysis(summary_dict, cat_analysis, outliers, regression_info, pca_info, anova_info, chi_info, cluster_info, ml_info):
     """
-    Use LLM to analyze all results and explain them in a non-technical manner.
-    Here we clarify the narrative: we ask the LLM to consider partial summaries,
-    stability of reasoning, and audience relevance.
+    Use LLM to analyze all results. Mention partial summaries and stable reasoning.
     """
     content = (
-        "You are a data analyst explaining insights to non-technical stakeholders. "
-        "Use simple language and explain why these insights matter.\n"
+        "You are a data analyst. The audience is non-technical, so explain insights clearly and why they matter.\n"
         "Partial Data summary:\n" + str(summary_dict) + "\n"
         "Categorical analysis:\n" + str(cat_analysis) + "\n"
         "Outliers:\n" + str(outliers) + "\n"
@@ -457,10 +442,10 @@ def get_llm_analysis(summary_dict, cat_analysis, outliers, regression_info, pca_
         "Chi-square:\n" + str(chi_info) + "\n"
         "Clustering:\n" + str(cluster_info) + "\n"
         "Advanced ML (RF):\n" + str(ml_info) + "\n\n"
-        "Highlight key findings, their implications, and maintain stable reasoning."
+        "Highlight the key findings, their practical significance, and maintain stable reasoning."
     )
     messages = [
-        {"role": "system", "content": "You are a clear and helpful data analyst."},
+        {"role": "system", "content": "You are a helpful and clear data analyst."},
         {"role": "user", "content": content}
     ]
     response = call_llm(messages)
@@ -469,35 +454,32 @@ def get_llm_analysis(summary_dict, cat_analysis, outliers, regression_info, pca_
 @retry(wait=wait_fixed(2), stop=stop_after_attempt(3))
 def get_llm_story(summary_dict, analysis_insights, chart_files, chart_insight, advanced_suggestion):
     """
-    Ask LLM to write a README in Markdown. Here we emphasize Markdown formatting (e.g. headings, bullet points),
-    addressing a non-technical audience, logical transitions, and integrating agentic steps:
-    - Mention how vision-like insight (chart_insight) came from another LLM call.
-    - Mention advanced_suggestion as guidance from another LLM step.
-    - Encourage headings and bullet points for clarity.
+    Ask LLM to write a README.md that integrates charts and insights smoothly.
+    Address the audience as non-technical, explain why findings matter, use the chart insight from previous LLM call.
+    Mention advanced suggestions and partial summaries.
     """
     content = (
-        "You are a data storyteller addressing non-technical readers. Produce a README.md:\n"
-        "- Use Markdown headings (e.g., ##, ###) and bullet points for structure.\n"
-        "- Start with context: what this dataset represents and why the reader should care.\n"
-        "- Move step-by-step through analyses: missing values, correlation, distributions, categorical frequencies, outliers, regression, PCA, ANOVA, chi-square, clustering, advanced ML.\n"
-        "- For each step, explain the purpose and what the findings mean for the audience.\n"
-        "- Integrate charts logically at the steps where they provide value. Reference " + str(chart_insight) + " as discovered by our 'vision' step.\n"
-        "- Mention that we used partial summaries for token efficiency and that we got advanced suggestions: " + str(advanced_suggestion) + ".\n"
-        "- End by emphasizing the key actionable insights. Ensure smooth transitions, logical sequencing, and a coherent storyline that feels like a guided narrative.\n\n"
+        "You are a data storyteller addressing non-technical stakeholders. Produce a polished README.md:\n"
+        "- Introduce the dataset and its context.\n"
+        "- Explain each analysis step in a narrative flow: missing values, correlation, distributions, categorical frequencies, outliers, regression, PCA, ANOVA, chi-square, clustering, and advanced ML.\n"
+        "- For each step, clarify why it matters to the audience.\n"
+        "- Integrate charts by referencing them at key moments. For example, mention how " + str(chart_insight) + " was discovered by our 'vision' step.\n"
+        "- Mention partial summaries (token efficiency) and the advanced suggestion: " + str(advanced_suggestion) + ".\n"
+        "- Conclude by highlighting the most meaningful insights and their practical implications.\n\n"
         "Partial Data summary:\n" + str(summary_dict) + "\n\n"
         "Insights:\n" + analysis_insights + "\n\n"
         "Charts: " + ", ".join(chart_files)
     )
 
     messages = [
-        {"role": "system", "content": "You are a brilliant data storyteller. Use Markdown headings, bullet points, and smooth transitions."},
+        {"role": "system", "content": "You are a brilliant data storyteller. Ensure coherence, smooth transitions, and audience relevance."},
         {"role": "user", "content": content}
     ]
     response = call_llm(messages)
     return response.choices[0].message.content
 
 def save_results(base_name, chart_files, readme_content):
-    """Save charts and the generated README to a directory."""
+    """Save charts and README.md."""
     output_dir = base_name
     os.makedirs(output_dir, exist_ok=True)
     for chart in chart_files:
@@ -509,16 +491,13 @@ def save_results(base_name, chart_files, readme_content):
     logging.info(f"Outputs saved in directory: {output_dir}")
 
 def load_and_prepare_data(csv_file):
-    """Load and summarize the data from CSV."""
+    """Load and summarize the data."""
     df = read_csv_with_encoding(csv_file)
     summary = summarize_dataframe(df, max_cols=10)
     return df, summary
 
 def perform_analyses(df):
-    """
-    Perform various analyses on the dataset.
-    This encapsulates all major steps (categorical, outliers, PCA, etc.).
-    """
+    """Perform various analyses and return results."""
     cat_analysis = analyze_categorical(df)
     outliers = detect_outliers(df)
     regression_info = simple_regression(df)
@@ -530,10 +509,7 @@ def perform_analyses(df):
     return cat_analysis, outliers, regression_info, pca_info, anova_info, chi_info, cluster_info, ml_info
 
 def generate_charts(df, base_name):
-    """
-    Generate charts that illustrate the analysis.
-    Returns a list of chart filenames to be referenced in the final narrative.
-    """
+    """Generate charts and return the list of chart files."""
     chart_files = []
     corr_file = f"{base_name}_correlation.png"
     cfile = plot_correlation_matrix(df, corr_file)
@@ -552,24 +528,17 @@ def generate_charts(df, base_name):
     return chart_files
 
 def run_llm_workflow(summary, cat_analysis, outliers, regression_info, pca_info, anova_info, chi_info, cluster_info, ml_info, chart_files):
-    """
-    Orchestrate the multi-step LLM workflow.
-    This demonstrates an agentic approach:
-    1. Get analysis insights (non-technical explanation).
-    2. Ask for advanced suggestions (further improvements).
-    3. Obtain vision-like chart insights.
-    4. Integrate all into a final narrative (README) that references previous steps.
-
-    This chain of calls shows how multiple LLM responses inform the final output,
-    creating a more agentic, context-aware storytelling process.
-    """
+    """Orchestrate LLM calls to produce insights and final story."""
+    # LLM analysis
     analysis_insights = get_llm_analysis(summary, cat_analysis, outliers, regression_info,
                                          pca_info, anova_info, chi_info, cluster_info, ml_info)
 
-    run_function_call_scenario(summary)  # Demonstrates function call scenario
-    advanced_suggestion = run_advanced_llm_scenario(summary)  # Further improvements suggested by LLM
-    chart_insight = run_vision_like_scenario(chart_files)  # "Vision" step insights
+    # Additional scenarios
+    run_function_call_scenario(summary)
+    advanced_suggestion = run_advanced_llm_scenario(summary)
+    chart_insight = run_vision_like_scenario(chart_files)
 
+    # Get narrative story
     readme_content = get_llm_story(summary, analysis_insights, chart_files, chart_insight, advanced_suggestion)
     return readme_content
 
@@ -583,27 +552,18 @@ def main():
         logging.error(f"CSV file {csv_file} does not exist.")
         sys.exit(1)
 
-    # Load and prepare data
     df, summary = load_and_prepare_data(csv_file)
-
-    # Perform the analyses
     cat_analysis, outliers, regression_info, pca_info, anova_info, chi_info, cluster_info, ml_info = perform_analyses(df)
 
-    # Generate charts
     base_name = safe_filename(os.path.basename(csv_file))
     chart_files = generate_charts(df, base_name)
-
-    # If PCA or clustering returned charts, add them
+    # If PCA or clustering returned chart files, add them
     if pca_info and 'pca_file' in pca_info:
         chart_files.append(pca_info['pca_file'])
     if cluster_info and 'cluster_file' in cluster_info:
         chart_files.append(cluster_info['cluster_file'])
 
-    # Run the multi-step LLM workflow (agentic approach)
-    readme_content = run_llm_workflow(summary, cat_analysis, outliers, regression_info,
-                                      pca_info, anova_info, chi_info, cluster_info, ml_info, chart_files)
-
-    # Save final results (README and charts)
+    readme_content = run_llm_workflow(summary, cat_analysis, outliers, regression_info, pca_info, anova_info, chi_info, cluster_info, ml_info, chart_files)
     save_results(base_name, chart_files, readme_content)
 
     logging.info("Analysis complete. README.md and charts created.")
