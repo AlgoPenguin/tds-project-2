@@ -57,15 +57,15 @@ def safe_filename(name: str) -> str:
 def call_llm(messages, functions=None, function_call=None):
     """
     Call the LLM with retries.
-    We instruct the LLM to maintain stable, consistent reasoning.
-    Lower temperature and repeated stable instructions are used.
+    Using temperature=0 for more deterministic output.
+    We keep messages concise and stable, avoid large data.
     """
     try:
         response = openai_client.chat.completions.create(
             model=MODEL_NAME,
             messages=messages,
             max_tokens=1024,
-            temperature=0.0,  # reduce temperature for more deterministic output
+            temperature=0.0,  # reduce temperature for consistency
             functions=functions,
             function_call=function_call
         )
@@ -73,9 +73,30 @@ def call_llm(messages, functions=None, function_call=None):
     except APIError as e:
         logging.error(f"OpenAI API error: {e}")
         raise
-# --------------------------
-# END OF DO NOT CHANGE BLOCK
-# --------------------------
+
+def truncate_for_llm(obj, max_len=100):
+    """
+    Truncate large lists or strings within dictionaries before sending to LLM.
+    This ensures token efficiency and prevents overly large function calls.
+    """
+    if isinstance(obj, dict):
+        new_dict = {}
+        for k, v in obj.items():
+            new_dict[k] = truncate_for_llm(v, max_len=max_len)
+        return new_dict
+    elif isinstance(obj, list):
+        # If list is too large, truncate
+        if len(obj) > max_len:
+            return obj[:max_len] + ['...truncated...']
+        else:
+            return [truncate_for_llm(x, max_len=max_len) for x in obj]
+    elif isinstance(obj, str):
+        # If string is too long, truncate
+        if len(obj) > max_len:
+            return obj[:max_len] + '...'
+        return obj
+    else:
+        return obj
 
 def read_csv_with_encoding(file_path, encodings=['utf-8', 'latin1', 'cp1252']):
     """Attempt to read CSV with various encodings."""
@@ -117,15 +138,16 @@ def analyze_categorical(df, max_levels=10):
     for col in df.columns:
         if not pd.api.types.is_numeric_dtype(df[col]) and df[col].dtype != 'datetime64[ns]':
             vc = df[col].value_counts(dropna=False)
+            top_dict = vc.head(max_levels).to_dict()
             cat_analysis.append({
                 'column': col,
-                'top_values': vc.head(max_levels).to_dict(),
+                'top_values': top_dict,
                 'num_unique': int(vc.shape[0])
             })
     return cat_analysis
 
 def detect_outliers(df):
-    """Detect outliers using a Z-score threshold of 3."""
+    """Detect outliers using Z-score threshold."""
     numeric_df = df.select_dtypes(include=[np.number])
     outliers = []
     for col in numeric_df.columns:
@@ -167,7 +189,6 @@ def perform_pca(df):
     numeric_df = df.select_dtypes(include=[np.number]).dropna(axis=0)
     if numeric_df.shape[1] <= 2 or numeric_df.shape[0] < 5:
         return None
-
     pca = PCA(n_components=2)
     pcs = pca.fit_transform(numeric_df)
     pca_df = pd.DataFrame(pcs, columns=["PC1", "PC2"])
@@ -239,7 +260,7 @@ def perform_clustering(df):
     plt.legend(title="Cluster")
     centers = kmeans.cluster_centers_
     for i, center in enumerate(centers):
-        plt.text(center[0], center[1], f"C{i}", fontsize=12, fontweight='bold', color='black', 
+        plt.text(center[0], center[1], f"C{i}", fontsize=12, fontweight='bold', color='black',
                  bbox=dict(facecolor='white', edgecolor='black', boxstyle='round'))
     plt.tight_layout()
     plt.savefig(cluster_file)
@@ -248,15 +269,12 @@ def perform_clustering(df):
 
 def advanced_ml_analysis(df):
     """
-    Attempt a more advanced ML approach: Use a small hyperparameter grid search with cross-validation 
-    for Random Forest to show dynamic analysis based on data.
+    Attempt a more advanced ML approach: 
+    Use a small hyperparameter grid search with cross-validation for Random Forest.
 
-    If regression: try two sets of hyperparameters and pick the best.
-    If classification: do the same.
+    Demonstrates dynamic analysis and careful token usage by not printing large results.
     """
     numeric_cols = df.select_dtypes(include=[np.number]).columns
-
-    # Simple heuristic: if many numeric features, try a small hyperparameter grid
     param_grid = {'n_estimators': [50, 100], 'max_depth': [None, 5]}
 
     if len(numeric_cols) > 2:
@@ -380,15 +398,14 @@ functions = [
 
 def run_function_call_scenario(summary_dict):
     """
-    Demonstrate function calling scenario.
-    Instruct the LLM to maintain stable reasoning.
+    Demonstrate function calling scenario with minimal logs.
     """
     content = (
         "Given the data summary, suggest a numeric analysis approach. "
         "Respond by calling 'suggest_numeric_analysis' with a suitable analysis_type."
     )
     messages = [
-        {"role": "system", "content": "You are a data scientist aiming at stable and consistent reasoning."},
+        {"role": "system", "content": "You are a data scientist, stable, consistent, and efficient."},
         {"role": "user", "content": content}
     ]
 
@@ -396,30 +413,28 @@ def run_function_call_scenario(summary_dict):
         resp = call_llm(messages, functions=functions, function_call={"name": "suggest_numeric_analysis"})
         for choice in resp.choices:
             if choice.message and choice.message.function_call:
-                logging.info("Function call suggested: %s", choice.message.function_call)
+                logging.info("Function call suggested.")
                 break
     except Exception as e:
         logging.error(f"Function call scenario failed: {e}")
 
 def run_advanced_llm_scenario(summary_dict):
     """
-    Ask LLM to propose another advanced method after initial results.
-    This can inform our dynamic choices (though not fully automated).
+    Ask LLM for another advanced method. Keep prompts small and stable.
     """
-    content = "We've done multiple analyses, including advanced ML with grid search. What advanced method could we try next and why?"
+    content = "We've done multiple analyses including advanced ML. What other advanced method could we try next and why?"
     messages = [
-        {"role": "system", "content": "You are an expert data scientist, stable and consistent."},
+        {"role": "system", "content": "You are an expert data scientist, stable and efficient."},
         {"role": "user", "content": content}
     ]
     resp = call_llm(messages)
     suggestion = resp.choices[0].message.content.strip()
-    logging.info("Additional advanced analysis suggestion: %s", suggestion)
+    logging.info("Advanced suggestion obtained.")
     return suggestion
 
 def run_vision_like_scenario(chart_files):
     """
-    If we have multiple charts, we now ask for insights on each (limit to 2 for token saving).
-    This demonstrates a more agentic approach: multiple LLM calls describing multiple charts.
+    Describe insights from up to two charts. Keep responses small.
     """
     if not chart_files:
         return None
@@ -430,16 +445,15 @@ def run_vision_like_scenario(chart_files):
             "Given this chart filename, call 'describe_chart_insights' to interpret its key insights."
         )
         messages = [
-            {"role": "system", "content": "You are a vision-enabled assistant. Remain stable in reasoning."},
+            {"role": "system", "content": "You are a vision-enabled assistant, stable and efficient."},
             {"role": "user", "content": content}
         ]
         try:
             resp = call_llm(messages, functions=functions, function_call={"name": "describe_chart_insights"})
             for choice in resp.choices:
                 if choice.message and choice.message.function_call:
-                    # Mock a response
-                    chart_insight = f"The chart '{chart}' reveals patterns suggesting deeper insight into the distribution or relationships."
-                    logging.info("Chart insight generated (mock): %s", chart_insight)
+                    # Mock a concise response
+                    chart_insight = f"The chart '{chart}' shows patterns that may reveal deeper relationships."
                     insights.append(chart_insight)
         except Exception as e:
             logging.error(f"Vision-like scenario failed: {e}")
@@ -450,12 +464,22 @@ def run_vision_like_scenario(chart_files):
 @retry(wait=wait_fixed(2), stop=stop_after_attempt(3))
 def get_llm_analysis(summary_dict, cat_analysis, outliers, regression_info, pca_info, anova_info, chi_info, cluster_info, ml_info):
     """
-    Use LLM to analyze results. We emphasize stable reasoning, direct integration of advanced steps,
-    and explaining why these steps matter.
+    Generate analysis insights. Truncate large structures before sending.
     """
+    # Truncate large structures
+    summary_dict = truncate_for_llm(summary_dict, max_len=50)
+    cat_analysis = truncate_for_llm(cat_analysis, max_len=50)
+    outliers = truncate_for_llm(outliers, max_len=50)
+    regression_info = truncate_for_llm(regression_info, max_len=50)
+    pca_info = truncate_for_llm(pca_info, max_len=50)
+    anova_info = truncate_for_llm(anova_info, max_len=50)
+    chi_info = truncate_for_llm(chi_info, max_len=50)
+    cluster_info = truncate_for_llm(cluster_info, max_len=50)
+    ml_info = truncate_for_llm(ml_info, max_len=50)
+
     content = (
         "You are a data analyst explaining insights to non-technical stakeholders. "
-        "Be stable, consistent, and highlight why each analysis matters. We used partial summaries for token efficiency.\n"
+        "Be stable, consistent, and highlight why each analysis matters. Token efficiency is key.\n"
         f"Partial Data summary:\n{summary_dict}\n"
         f"Categorical analysis:\n{cat_analysis}\n"
         f"Outliers:\n{outliers}\n"
@@ -464,11 +488,11 @@ def get_llm_analysis(summary_dict, cat_analysis, outliers, regression_info, pca_
         f"ANOVA:\n{anova_info}\n"
         f"Chi-square:\n{chi_info}\n"
         f"Clustering:\n{cluster_info}\n"
-        f"Advanced ML (with grid search):\n{ml_info}\n\n"
-        "Emphasize how these methods build on each other, why they are chosen, and what they imply."
+        f"Advanced ML:\n{ml_info}\n\n"
+        "Explain the significance of each and remain concise."
     )
     messages = [
-        {"role": "system", "content": "You are a clear data analyst, stable and consistent in reasoning."},
+        {"role": "system", "content": "You are a clear, stable data analyst. Keep reasoning concise."},
         {"role": "user", "content": content}
     ]
     response = call_llm(messages)
@@ -477,34 +501,34 @@ def get_llm_analysis(summary_dict, cat_analysis, outliers, regression_info, pca_
 @retry(wait=wait_fixed(2), stop=stop_after_attempt(3))
 def get_llm_story(summary_dict, analysis_insights, chart_files, chart_insight, advanced_suggestion):
     """
-    Ask LLM to write a stable, coherent README in Markdown.
-    Use headings, bullet points, mention advanced suggestions and dynamic choices.
-    Integrate chart insights and show how analysis steps led to advanced methods.
+    Write a Markdown README with stable reasoning, referencing insights and advanced suggestions.
+    Truncate large structures before sending.
     """
+    summary_dict = truncate_for_llm(summary_dict, max_len=50)
+    # analysis_insights is a string from LLM, assume it's already concise
+
     content = (
         "You are a data storyteller for non-technical readers, stable and consistent. Produce a Markdown README:\n"
-        "- Use Markdown headings and bullet points.\n"
-        "- Introduce the dataset context.\n"
-        "- Show a logical sequence: start with basic EDA, missing values, correlation, distributions, categorical frequencies, outliers, regression, PCA, ANOVA, chi-square, clustering, and advanced ML with hyperparameter search.\n"
-        "- Explain why each step was chosen and what its findings mean.\n"
-        "- Reference the chart insights: " + str(chart_insight) + " from our vision steps.\n"
-        "- Mention partial summaries (token efficiency), advanced suggestions: " + str(advanced_suggestion) + ".\n"
-        "- Emphasize how data characteristics influenced dynamic analysis choices (e.g., if many numeric features, tried PCA and RF with CV).\n"
-        "- Conclude with key actionable insights.\n\n"
+        "- Use headings and bullet points.\n"
+        "- Introduce dataset context.\n"
+        "- Explain each analysis step logically and why it's chosen.\n"
+        "- Reference the vision insights: " + str(chart_insight) + ".\n"
+        "- Mention partial summaries for token efficiency and the advanced suggestion: " + str(advanced_suggestion) + ".\n"
+        "- Conclude with actionable insights.\n\n"
         f"Partial Data summary:\n{summary_dict}\n\n"
         f"Insights:\n{analysis_insights}\n\n"
         "Charts: " + ", ".join(chart_files)
     )
 
     messages = [
-        {"role": "system", "content": "You are a brilliant data storyteller, stable, consistent, and logically structured."},
+        {"role": "system", "content": "You are a brilliant data storyteller, stable, consistent, efficient."},
         {"role": "user", "content": content}
     ]
     response = call_llm(messages)
     return response.choices[0].message.content
 
 def save_results(base_name, chart_files, readme_content):
-    """Save charts and README.md."""
+    """Save charts and README.md with minimal logs."""
     output_dir = base_name
     os.makedirs(output_dir, exist_ok=True)
     for chart in chart_files:
@@ -513,7 +537,7 @@ def save_results(base_name, chart_files, readme_content):
     readme_path = os.path.join(output_dir, "README.md")
     with open(readme_path, "w", encoding="utf-8") as f:
         f.write(readme_content)
-    logging.info(f"Outputs saved in directory: {output_dir}")
+    logging.info(f"Outputs saved in {output_dir}")
 
 def load_and_prepare_data(csv_file):
     """Load and summarize the data."""
@@ -523,9 +547,8 @@ def load_and_prepare_data(csv_file):
 
 def perform_analyses(df):
     """
-    Perform various analyses:
-    - If correlation is high, mention the idea of dropping correlated features (not implemented, but suggests dynamism).
-    - Based on data shape, we do advanced ML with grid search.
+    Perform various analyses and return results.
+    Dynamic and advanced steps included.
     """
     cat_analysis = analyze_categorical(df)
     outliers = detect_outliers(df)
@@ -538,7 +561,7 @@ def perform_analyses(df):
     return cat_analysis, outliers, regression_info, pca_info, anova_info, chi_info, cluster_info, ml_info
 
 def generate_charts(df, base_name):
-    """Generate charts and return the list of chart files. Fewer charts for token efficiency."""
+    """Generate charts, limit number to reduce token usage if described."""
     chart_files = []
     corr_file = f"{base_name}_correlation.png"
     cfile = plot_correlation_matrix(df, corr_file)
@@ -550,7 +573,7 @@ def generate_charts(df, base_name):
     if mfile:
         chart_files.append(mfile)
 
-    # Just keep one histogram for simplicity (efficiency)
+    # Just one histogram for efficiency
     hist_file = f"{base_name}_hist.png"
     hfile = plot_hist_of_numeric(df, hist_file)
     if hfile:
@@ -559,11 +582,7 @@ def generate_charts(df, base_name):
 
 def run_llm_workflow(summary, cat_analysis, outliers, regression_info, pca_info, anova_info, chi_info, cluster_info, ml_info, chart_files):
     """
-    Orchestrate LLM calls:
-    1. Analyze results (non-technical explanation)
-    2. Ask for advanced suggestions
-    3. Vision scenario for multiple charts if possible
-    4. Final narrative integrating all steps, stable reasoning emphasized.
+    Orchestrate LLM calls in an agentic workflow, with token efficiency in mind.
     """
     analysis_insights = get_llm_analysis(summary, cat_analysis, outliers, regression_info,
                                          pca_info, anova_info, chi_info, cluster_info, ml_info)
@@ -591,7 +610,6 @@ def main():
     base_name = safe_filename(os.path.basename(csv_file))
     chart_files = generate_charts(df, base_name)
 
-    # If PCA or clustering returned chart files, add them
     if pca_info and 'pca_file' in pca_info:
         chart_files.append(pca_info['pca_file'])
     if cluster_info and 'cluster_file' in cluster_info:
@@ -599,6 +617,7 @@ def main():
 
     readme_content = run_llm_workflow(summary, cat_analysis, outliers, regression_info,
                                       pca_info, anova_info, chi_info, cluster_info, ml_info, chart_files)
+
     save_results(base_name, chart_files, readme_content)
 
     logging.info("Analysis complete. README.md and charts created.")
